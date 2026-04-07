@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Xcode
+*.xcworkspace
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.xcuserstate
+
+# JUCE
+*.jucer~
+
+# IDE
+.vscode/
+.idea/
