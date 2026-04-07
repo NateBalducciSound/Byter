@@ -13,12 +13,13 @@
 //==============================================================================
 /**
 */
-class NewProjectAudioProcessor  : public juce::AudioProcessor
+class ByterAudioProcessor  : public juce::AudioProcessor
 {
 public:
     //==============================================================================
-    NewProjectAudioProcessor();
-    ~NewProjectAudioProcessor() override;
+    ByterAudioProcessor();
+    ~ByterAudioProcessor() override;
+
 
     //==============================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -55,5 +56,14 @@ public:
 
 private:
     //==============================================================================
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NewProjectAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ByterAudioProcessor)
+
+    //Bitcrush Variables
+
+    double sampleRate = 44100.0; 
+
+  std::array<float, 2> heldSample {0.0f, 0.0f};
+  std::array<float, 2> counter {0.0f, 0.0f};
+
+
 };
