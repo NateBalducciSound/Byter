@@ -10,6 +10,61 @@
 #include "PluginEditor.h"
 
 //==============================================================================
+juce::AudioProcessorValueTreeState::ParameterLayout
+ByterAudioProcessor::createParameterLayout()
+{
+    juce::AudioProcessorValueTreeState::ParameterLayout layout;
+
+    // fixed bit depth
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "bitDepth", "Bit Depth",
+        juce::NormalisableRange<float>(1.0f, 16.0f, 1.0f), 8.0f));
+
+    // sample rate modulation range
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "srMin", "SR Min",
+        juce::NormalisableRange<float>(1000.0f, 44100.0f, 1.0f), 2000.0f));
+
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "srMax", "SR Max",
+        juce::NormalisableRange<float>(1000.0f, 44100.0f, 1.0f), 44100.0f));
+
+    // modulation
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "modAmount", "Mod Amount",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f));
+
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "modDelay", "Mod Delay",
+        juce::NormalisableRange<float>(0.0f, 2000.0f, 1.0f), 0.0f));
+
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "modDecay", "Mod Decay",
+        juce::NormalisableRange<float>(10.0f, 5000.0f, 1.0f), 500.0f));
+
+    // chance: probability that a random speed boost fires on each onset
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "chance", "Chance",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f));
+
+    // modSpeed: max speed multiplier applied when chance fires (1x = no boost, 10x = very fast)
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "modSpeed", "Mod Speed",
+        juce::NormalisableRange<float>(1.0f, 10.0f, 0.1f), 1.0f));
+
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        "onsetThreshold", "Onset Threshold",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.1f));
+
+    layout.add(std::make_unique<juce::AudioParameterBool>(
+        "modDirection", "Mod Direction", false));
+
+    layout.add(std::make_unique<juce::AudioParameterBool>(
+        "bypass", "Bypass", false));
+
+    return layout;
+}
+
 ByterAudioProcessor::ByterAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
      : AudioProcessor (BusesProperties()
@@ -19,7 +74,8 @@ ByterAudioProcessor::ByterAudioProcessor()
                       #endif
                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
                      #endif
-                       )
+                       ),
+       audioValueTree(*this, nullptr, "Parameters", createParameterLayout())
 #endif
 {
 }
@@ -29,10 +85,7 @@ ByterAudioProcessor::~ByterAudioProcessor()
 }
 
 //==============================================================================
-const juce::String ByterAudioProcessor::getName() const
-{
-    return JucePlugin_Name;
-}
+const juce::String ByterAudioProcessor::getName() const { return JucePlugin_Name; }
 
 bool ByterAudioProcessor::acceptsMidi() const
 {
@@ -61,49 +114,29 @@ bool ByterAudioProcessor::isMidiEffect() const
    #endif
 }
 
-double ByterAudioProcessor::getTailLengthSeconds() const
-{
-    return 0.0;
-}
-
-int ByterAudioProcessor::getNumPrograms()
-{
-    return 1;   // NB: some hosts don't cope very well if you tell them there are 0 programs,
-                // so this should be at least 1, even if you're not really implementing programs.
-}
-
-int ByterAudioProcessor::getCurrentProgram()
-{
-    return 0;
-}
-
-void ByterAudioProcessor::setCurrentProgram (int index)
-{
-}
-
-const juce::String ByterAudioProcessor::getProgramName (int index)
-{
-    return {};
-}
-
-void ByterAudioProcessor::changeProgramName (int index, const juce::String& newName)
-{
-}
+double ByterAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+int    ByterAudioProcessor::getNumPrograms()             { return 1; }
+int    ByterAudioProcessor::getCurrentProgram()          { return 0; }
+void   ByterAudioProcessor::setCurrentProgram (int)      {}
+const juce::String ByterAudioProcessor::getProgramName (int) { return {}; }
+void   ByterAudioProcessor::changeProgramName (int, const juce::String&) {}
 
 //==============================================================================
 void ByterAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-  this->sampleRate = sampleRate;
+    this->sampleRate = sampleRate;
 
-  heldSample.fill (0.0f);
-  counter.fill(0.0f);
+    heldSample.fill(0.0f);
+    counter.fill(0.0f);
+    envFollower.fill(0.0f);
+    prevEnv.fill(0.0f);
+    modEnvelope.fill(0.0f);
+    delayCounter.fill(0);
+    tailActive.fill(false);
+    currentSpeedMult.fill(1.0f);
 }
 
-void ByterAudioProcessor::releaseResources()
-{
-    // When playback stops, you can use this as an opportunity to free up any
-    // spare memory, etc.
-}
+void ByterAudioProcessor::releaseResources() {}
 
 #ifndef JucePlugin_PreferredChannelConfigurations
 bool ByterAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -112,20 +145,13 @@ bool ByterAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
     juce::ignoreUnused (layouts);
     return true;
   #else
-    // This is the place where you check if the layout is supported.
-    // In this template code we only support mono or stereo.
-    // Some plugin hosts, such as certain GarageBand versions, will only
-    // load plugins that support stereo bus layouts.
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
      && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
         return false;
-
-    // This checks if the input layout matches the output layout
    #if ! JucePlugin_IsSynth
     if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
         return false;
    #endif
-
     return true;
   #endif
 }
@@ -137,81 +163,109 @@ void ByterAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     auto totalNumInputChannels  = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
+    // read params once per block
+    bool  bypass         = audioValueTree.getRawParameterValue("bypass")->load();
+    float bitDepth       = audioValueTree.getRawParameterValue("bitDepth")->load();
+    float srMin          = audioValueTree.getRawParameterValue("srMin")->load();
+    float srMax          = audioValueTree.getRawParameterValue("srMax")->load();
+    float modAmount      = audioValueTree.getRawParameterValue("modAmount")->load();
+    float modDelayMs     = audioValueTree.getRawParameterValue("modDelay")->load();
+    float modDecayMs     = audioValueTree.getRawParameterValue("modDecay")->load();
+    float chance         = audioValueTree.getRawParameterValue("chance")->load();
+    float modSpeed       = audioValueTree.getRawParameterValue("modSpeed")->load();
+    float onsetThreshold = audioValueTree.getRawParameterValue("onsetThreshold")->load();
+    bool  modDirection   = audioValueTree.getRawParameterValue("modDirection")->load();
 
-    //params for hardcoded values for testing
+    if (bypass) return;
 
-    float bitDepth = 4.0f;
-    float targetSampleRate = 8000.0f;
-    float holdTime = (float)sampleRate/targetSampleRate;
+    float envReleaseCoeff  = std::exp(-1.0f / (0.1f * (float)sampleRate));
+    int   delayTimeSamples = (int)(modDelayMs * 0.001f * (float)sampleRate);
 
+    // bit depth is fixed
+    float steps    = std::pow(2.0f, bitDepth);
+    float stepSize = 2.0f / steps;
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
-        auto* channelData = buffer.getWritePointer (channel);
-        //change data here (in general)
+        auto* channelData = buffer.getWritePointer(channel);
 
+        for (int n = 0; n < buffer.getNumSamples(); ++n)
+        {
+            // envelope follower
+            float inputAbs = std::abs(channelData[n]);
+            if (inputAbs > envFollower[channel])
+                envFollower[channel] = inputAbs;
+            else
+                envFollower[channel] *= envReleaseCoeff;
 
-        //Bitcrush sample loop
-        for (int n = 0; n <buffer.getNumSamples(); ++n)
-          {
-            //sample rate
+            // onset detection
+            bool onset = (envFollower[channel] > onsetThreshold) && (prevEnv[channel] <= onsetThreshold);
+            prevEnv[channel] = envFollower[channel];
+
+            // onset always fires the tail; chance gates a random speed boost
+            if (onset && !tailActive[channel]) {
+                delayCounter[channel] = delayTimeSamples;
+                modEnvelope[channel]  = 1.0f;
+                tailActive[channel]   = true;
+                // if chance fires, pick a random multiplier between 1x and modSpeed
+                if (random.nextFloat() < chance)
+                    currentSpeedMult[channel] = 1.0f + random.nextFloat() * (modSpeed - 1.0f);
+                else
+                    currentSpeedMult[channel] = 1.0f;
+            }
+
+            // tail modulator — decay coeff uses per-channel speed multiplier
+            float modDecayCoeff = std::exp(-currentSpeedMult[channel] / (modDecayMs * 0.001f * (float)sampleRate));
+            if (tailActive[channel]) {
+                if (delayCounter[channel] > 0) {
+                    delayCounter[channel]--;
+                } else {
+                    modEnvelope[channel] *= modDecayCoeff;
+                    if (modEnvelope[channel] < 0.001f) {
+                        modEnvelope[channel] = 0.0f;
+                        tailActive[channel]  = false;
+                    }
+                }
+            }
+
+            // modulate sample rate
+            // modDirection false: starts at srMin (crushed), decays toward srMax (clean)
+            // modDirection true:  starts at srMax (clean), decays toward srMin (crushed)
+            float env = modEnvelope[channel] * modAmount;
+            float targetSR = modDirection
+                ? srMax - env * (srMax - srMin)   // starts clean, crushes
+                : srMin + env * (srMax - srMin);   // starts crushed, cleans up
+
+            float holdTime = (float)sampleRate / targetSR;
+
+            // sample rate reduction
             counter[channel] += 1.0f;
-            if (counter[channel] >= holdTime)
-            {
-              counter[channel] -= holdTime;
-              heldSample[channel] = channelData[n];
+            if (counter[channel] >= holdTime) {
+                counter[channel] -= holdTime;
+                heldSample[channel] = channelData[n];
             }
             channelData[n] = heldSample[channel];
-            //bit depth reduction
-            float steps = std::pow(2.0f, bitDepth);
-            float step = 2.0f / steps;
-            channelData[n] = step * std::round(channelData[n] / step);
-          }
-    } 
+
+            // bit depth reduction (fixed)
+            channelData[n] = stepSize * std::round(channelData[n] / stepSize);
+        }
+    }
 }
 
 //==============================================================================
-bool ByterAudioProcessor::hasEditor() const
-{
-    return true; // (change this to false if you choose to not supply an editor)
-}
+bool ByterAudioProcessor::hasEditor() const { return true; }
 
 juce::AudioProcessorEditor* ByterAudioProcessor::createEditor()
 {
     return new ByterAudioProcessorEditor (*this);
 }
 
-//==============================================================================
-void ByterAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
-{
-    // You should use this method to store your parameters in the memory block.
-    // You could do that either as raw data, or use the XML or ValueTree classes
-    // as intermediaries to make it easy to save and load complex data.
-}
+void ByterAudioProcessor::getStateInformation (juce::MemoryBlock& destData) {}
+void ByterAudioProcessor::setStateInformation (const void* data, int sizeInBytes) {}
 
-void ByterAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
-{
-    // You should use this method to restore your parameters from this memory block,
-    // whose contents will have been created by the getStateInformation() call.
-}
-
-//==============================================================================
-// This creates new instances of the plugin..
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new ByterAudioProcessor();

@@ -16,6 +16,7 @@
 class ByterAudioProcessor  : public juce::AudioProcessor
 {
 public:
+  //base JUCE stuff
     //==============================================================================
     ByterAudioProcessor();
     ~ByterAudioProcessor() override;
@@ -54,6 +55,12 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+  //Added Shit by me
+  juce::AudioProcessorValueTreeState audioValueTree;
+  static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+
+
 private:
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ByterAudioProcessor)
@@ -64,6 +71,18 @@ private:
 
   std::array<float, 2> heldSample {0.0f, 0.0f};
   std::array<float, 2> counter {0.0f, 0.0f};
+
+
+  //mod env and crush mod tail params
+  //env follower states for both chans
+  std::array<float, 2> envFollower { 0.0f, 0.0f};
+  std::array<float, 2> prevEnv { 0.0f, 0.0f};
+
+  //tail mod states for both chans
+  std::array<float, 2> modEnvelope {0.0f, 0.0f};
+  std::array<int, 2> delayCounter { 0, 0};
+  std::array<bool, 2> tailActive { false, false };
+
 
 
 };
